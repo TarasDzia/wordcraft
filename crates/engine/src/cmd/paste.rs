@@ -5,7 +5,9 @@
 //! a rich fragment; the system clipboard gives text, and callers (agents, the CLI, a front end
 //! with a richer clipboard) may pass `html`, `rtf` or a `picture` too. Text that is itself RTF or
 //! HTML source can also be pasted as that format. Paste keeps the source formatting of another
-//! program's HTML or RTF; Merge Formatting keeps only its emphasis (#687).
+//! program's HTML or RTF; Merge Formatting keeps only its emphasis (#687). Another WordCraft
+//! window's copy comes as a WordCraft Fragment (`wordcraft`, see `native_clip`): Paste and Paste
+//! Special's Formatted Text keep its formatting as it was there.
 //! Plain text has no formatting to keep, so Paste inserts it as Keep Text Only does.
 
 use std::collections::BTreeMap;
@@ -38,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("edit.pasteSpecial", "Paste Special", "Home › Clipboard › Paste", paste_special)
             .key("Mod+Alt+V")
-            .params(r#"{"as"?: "formatted"|"rtf"|"html"|"picture"|"text", "text"?: string, "html"?: string, "rtf"?: string, "picture"?: base64}"#),
+            .params(r#"{"as"?: "formatted"|"rtf"|"html"|"picture"|"text", "text"?: string, "html"?: string, "rtf"?: string, "picture"?: base64, "wordcraft"?: string (WordCraft Fragment)}"#),
     ]
 }
 
@@ -63,6 +65,8 @@ fn looks_like_html(t: &str) -> bool {
 fn source(s: &Session, v: &Value, fmt: &str) -> Option<String> {
     let non_empty = |t: String| if t.is_empty() { None } else { Some(t) };
     match fmt {
+        // Another WordCraft window's copy (or this one's).
+        "formatted" if p::str(v, "wordcraft").is_some_and(super::native_clip::looks_native) => Some(String::new()),
         "formatted" => {
             let f = s.clipboard.as_ref()?;
             // System clipboard text that isn't our own copy means someone else copied since.
@@ -136,7 +140,10 @@ fn paste_special(s: &mut Session, v: &Value) -> CmdResult {
             r["pastedAs"] = json!(fmt);
             return Ok(r);
         }
-        "formatted" => s.clipboard.clone().ok_or_else(|| CmdError::Failed("the clipboard is empty".into()))?,
+        "formatted" => {
+            let text = p::str(v, "text").map(|t| t.replace("\r\n", "\n"));
+            own_fragment(s, v, text.as_deref()).ok_or_else(|| CmdError::Failed("the clipboard is empty".into()))?
+        }
         "html" => adopt(s, import_html(&src)),
         _ => adopt(s, wordcraft_formats::rtf::import(src.as_bytes()).map_err(|e| CmdError::Failed(format!("bad RTF: {e}")))?),
     };
@@ -267,11 +274,8 @@ pub enum Pasted {
 /// another program's formatted copy (HTML, RTF), else the system clipboard's text.
 pub fn paste_content(s: &mut Session, v: &Value) -> Result<Pasted, CmdError> {
     let text = p::str(v, "text").map(|t| t.replace("\r\n", "\n"));
-    if let Some(f) = &s.clipboard
-        && text.as_ref().is_none_or(|t| f.clipboard_text() == *t)
-        && (text.is_some() || (p::str(v, "html").is_none() && p::str(v, "rtf").is_none()))
-    {
-        return Ok(Pasted::Fragment(f.clone()));
+    if let Some(f) = own_fragment(s, v, text.as_deref()) {
+        return Ok(Pasted::Fragment(f));
     }
     if let Some(f) = rich_fragment(s, v) {
         return Ok(Pasted::Fragment(f));
@@ -280,6 +284,29 @@ pub fn paste_content(s: &mut Session, v: &Value) -> Result<Pasted, CmdError> {
         Some(t) if !t.is_empty() => Ok(Pasted::Text(t)),
         _ => Err(CmdError::Failed("the clipboard is empty".into())),
     }
+}
+
+/// WordCraft's own copy, if the clipboard holds one: this window's, while the system clipboard
+/// still holds it (its text, or its WordCraft Fragment); else another WordCraft window's, from its
+/// WordCraft Fragment, keeping the look it had there (see `native_clip`). A fragment whose text
+/// isn't the system clipboard's is stale: another program copied since.
+fn own_fragment(s: &mut Session, v: &Value, text: Option<&str>) -> Option<Fragment> {
+    let native = p::str(v, "wordcraft").filter(|n| super::native_clip::looks_native(n));
+    let ours = native.is_some_and(|n| s.clipboard_native_id != 0 && super::native_clip::id(n) == s.clipboard_native_id);
+    if let Some(f) = &s.clipboard
+        && (ours
+            || (native.is_none()
+                && text.is_none_or(|t| f.clipboard_text() == t)
+                && (text.is_some() || (p::str(v, "html").is_none() && p::str(v, "rtf").is_none()))))
+    {
+        return Some(f.clone());
+    }
+    let (copied, doc) = super::native_clip::decode(native?)?;
+    if text.is_some_and(|t| t != copied.replace("\r\n", "\n")) {
+        return None;
+    }
+    let frag = super::native_clip::adopt(s, doc);
+    (!frag.blocks.is_empty()).then_some(frag)
 }
 
 /// [`paste_content`] as a fragment. Text becomes paragraphs with no formatting of their own.
@@ -445,7 +472,7 @@ pub(crate) fn unlink_sections(blocks: &mut [Block]) {
 
 /// Turn an imported document into a fragment of the session's document: bring over the media,
 /// lists and styles it refers to (renumbered so they can't collide with ours).
-fn adopt(s: &mut Session, src: Document) -> Fragment {
+pub(crate) fn adopt(s: &mut Session, src: Document) -> Fragment {
     let mut media = BTreeMap::new();
     for (key, data) in &src.media {
         let ext = key.rsplit_once('.').map(|(_, e)| e).unwrap_or("png");
@@ -468,7 +495,14 @@ fn adopt(s: &mut Session, src: Document) -> Fragment {
     }
     for st in &src.styles.styles {
         if s.doc.styles.get(&st.id).is_none() {
-            s.doc.styles.upsert(st.clone());
+            // The list a style gives comes along, under its number here.
+            let mut st = st.clone();
+            if let Some(n) = st.para.numbering.as_mut()
+                && n.num != 0
+            {
+                n.num = num_map.get(&n.num).copied().unwrap_or(0);
+            }
+            s.doc.styles.upsert(st);
         }
     }
     // Tracked changes the source carries (RTF revisions) point at its own revisions: add them
