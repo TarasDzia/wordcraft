@@ -47,12 +47,24 @@ front end fills it from the clipboard (`Services::clipboard_native`).
 3. A payload whose text is not the clipboard's text is stale (another program copied since) and is
    ignored; so is anything that doesn't read as a payload. The HTML, RTF or text is pasted then.
 
+WordCraft's own copy (either case) keeps its paragraph formatting as Word's Keep Source Formatting
+does: a pasted paragraph whose mark came with the copy is formatted as it was — the first one too,
+though it joins the paragraph the paste starts in (it used to keep that paragraph's formatting
+whenever it had any, so a DOCX's spacing before and after and line spacing were lost) — and so is
+a whole paragraph (copied from its start to its end, as Word's smart paragraph selection takes its
+mark) pasted into an empty one. A piece of a paragraph pasted into text takes that paragraph's.
+
 Merge Formatting and Keep Text Only work on it as on any other paste.
 
 ## Other programs
 
 Copy's HTML is now exported with the source document's styles, lists and pictures, so Word,
-LibreOffice and browsers see a copy's Normal font, style sizes and spacing as they are in WordCraft.
+LibreOffice and browsers see a copy's Normal font and style sizes as they are in WordCraft. HTML and
+RTF exports (the clipboard's HTML, Save as HTML or RTF) also carry each paragraph's spacing before
+and after, line spacing and indents as they resolve in its document: HTML `margin-top`/`-bottom`,
+`line-height` (with `mso-line-height-rule` for exact and at-least spacing), `margin-left`/`-right`
+and `text-indent`; RTF `\sb \sa \sl\slmult \li \ri \fi`. They used to be left out (RTF wrote fixed
+values per kind of paragraph).
 
 Tests: `crates/engine/src/cmd/native_clip.rs` (round trip, keep source look, own copy, stale and
 hostile payloads, pictures) and `crates/ui-egui/src/system_clipboard.rs`
@@ -62,4 +74,4 @@ hostile payloads, pictures) and `crates/ui-egui/src/system_clipboard.rs`
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-18 | new | WordCraft Fragment on the Windows clipboard; Paste keeps another window's formatting |
+| 2026-10-18 | new | WordCraft Fragment on the Windows clipboard; Paste keeps another window's formatting; own copies keep paragraph spacing; HTML and RTF carry spacing, line spacing and indents |

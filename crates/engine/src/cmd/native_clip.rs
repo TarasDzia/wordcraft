@@ -55,6 +55,17 @@ struct Payload {
     /// The pictures the copy shows, base64, by the source document's media key.
     #[serde(default)]
     media: BTreeMap<String, String>,
+    /// The copy is whole paragraphs (see `Session::clipboard_whole`).
+    #[serde(default)]
+    whole: bool,
+}
+
+/// A payload read back: the copy's text, the copy as a document, and whether it is whole
+/// paragraphs.
+pub struct Decoded {
+    pub text: String,
+    pub doc: Document,
+    pub whole: bool,
 }
 
 /// The copy in the session's clipboard as a document of its own: the fragment's blocks and text
@@ -91,7 +102,7 @@ pub fn encode(s: &Session, doc: Option<&Document>) -> Option<String> {
         None => copy_document(s)?,
     };
     let media = std::mem::take(&mut doc.media).iter().map(|(k, v)| (k.clone(), base64_encode(v))).collect();
-    let payload = Payload { format: MAGIC.into(), version: VERSION, text: s.clipboard_text.clone(), doc, media };
+    let payload = Payload { format: MAGIC.into(), version: VERSION, text: s.clipboard_text.clone(), doc, media, whole: s.clipboard_whole };
     let json = serde_json::to_string(&payload).ok()?;
     (json.len() <= MAX_NATIVE_BYTES).then_some(json)
 }
@@ -103,7 +114,7 @@ pub fn looks_native(json: &str) -> bool {
 
 /// A payload's text and document, its pictures restored and its runs repaired; `None` for
 /// anything that isn't a payload we can read.
-pub fn decode(json: &str) -> Option<(String, Document)> {
+pub fn decode(json: &str) -> Option<Decoded> {
     if !looks_native(json) {
         return None;
     }
@@ -114,7 +125,7 @@ pub fn decode(json: &str) -> Option<(String, Document)> {
     let mut doc = p.doc;
     doc.media = p.media.iter().filter_map(|(k, b64)| Some((k.clone(), Arc::new(base64_decode(b64)?)))).collect();
     doc.normalize_runs();
-    Some((p.text, doc))
+    Some(Decoded { text: p.text, doc, whole: p.whole })
 }
 
 /// A short id of a payload, to tell the window's own copy from another window's.
@@ -319,7 +330,7 @@ mod tests {
         let r = select_all_and_copy(&mut a);
         let payload = r["wordcraft"].as_str().expect("the copy has a WordCraft Fragment");
         assert!(looks_native(payload));
-        let (text, doc) = decode(payload).expect("it reads back");
+        let Decoded { text, doc, .. } = decode(payload).expect("it reads back");
         assert_eq!(text, a.clipboard_text);
         assert_eq!(doc.styles.get("Normal").and_then(|n| n.chr.font.clone()).as_deref(), Some("Georgia"));
         assert_eq!(a.clipboard_native_id, id(payload));
@@ -420,5 +431,75 @@ mod tests {
         b.run("edit.paste", &json!({"text": r["text"], "wordcraft": r["wordcraft"]})).unwrap();
         assert_eq!(b.doc.media.len(), 1, "the picture came with the paste");
         assert!(b.doc.media.values().any(|d| **d == png));
+    }
+
+    /// Spacing before and after and line spacing come with a copy, as with Word's Keep Source
+    /// Formatting: the first pasted paragraph keeps its own though the paragraph it joins has
+    /// formatting of its own, and a whole paragraph pasted into an empty one brings its
+    /// formatting; a piece of a paragraph pasted into text takes that paragraph's.
+    #[test]
+    fn paragraph_spacing_comes_with_the_copy() {
+        use wordcraft_doc::props::LineSpacing;
+        let spaced = |d: &mut Document| {
+            for b in d.body.iter_mut() {
+                if let Block::Para(p) = Arc::make_mut(b) {
+                    p.props.space_before = Some(18.0);
+                    p.props.space_after = Some(30.0);
+                    p.props.line_spacing = Some(LineSpacing::Multiple(2.0));
+                }
+            }
+        };
+        // The destination's paragraphs state spacing of their own, as a DOCX's often do.
+        let dest = || {
+            let mut d = Document::from_text("Here\n");
+            for b in d.body.iter_mut() {
+                if let Block::Para(p) = Arc::make_mut(b) {
+                    p.props.space_before = Some(0.0);
+                    p.props.space_after = Some(0.0);
+                }
+            }
+            Session::new(d)
+        };
+        let spacing = |s: &Session, i: usize| {
+            let p = body_para(s, i);
+            (p.props.space_before, p.props.space_after, p.props.line_spacing)
+        };
+        let want = (Some(18.0), Some(30.0), Some(LineSpacing::Multiple(2.0)));
+        let mut src = Document::from_text("One\nTwo\nThree");
+        spaced(&mut src);
+        let mut a = Session::new(src);
+        let copy = |a: &mut Session, from: (usize, usize), to: (usize, usize)| {
+            a.run("select.range", &json!({"anchor": {"block": from.0, "off": from.1}, "focus": {"block": to.0, "off": to.1}})).unwrap();
+            a.run("edit.copy", &json!({})).unwrap()
+        };
+        let paste_at = |b: &mut Session, r: &Value, block: usize, off: usize| {
+            b.run("select.range", &json!({"anchor": {"block": block, "off": off}, "focus": {"block": block, "off": off}})).unwrap();
+            b.run("edit.paste", &json!({"text": r["text"], "wordcraft": r["wordcraft"]})).unwrap();
+        };
+        // Two whole paragraphs into the empty last line.
+        let r = copy(&mut a, (0, 0), (1, 3));
+        let mut b = dest();
+        paste_at(&mut b, &r, 1, 0);
+        assert_eq!(body_para(&b, 1).text, "One");
+        assert_eq!(spacing(&b, 1), want, "the first pasted paragraph");
+        assert_eq!(spacing(&b, 2), want, "the last pasted paragraph");
+        assert_eq!(spacing(&b, 0), (Some(0.0), Some(0.0), None), "the paragraph before is untouched");
+        // One whole paragraph into an empty line.
+        let r = copy(&mut a, (2, 0), (2, 5));
+        let mut b = dest();
+        paste_at(&mut b, &r, 1, 0);
+        assert_eq!(body_para(&b, 1).text, "Three");
+        assert_eq!(spacing(&b, 1), want);
+        // A piece of a paragraph into text: the paragraph there keeps its own.
+        let r = copy(&mut a, (2, 1), (2, 4));
+        let mut b = dest();
+        paste_at(&mut b, &r, 0, 2);
+        assert_eq!(body_para(&b, 0).text, "Hehrere");
+        assert_eq!(spacing(&b, 0), (Some(0.0), Some(0.0), None));
+        // The window's own copy behaves the same.
+        let r = copy(&mut a, (0, 0), (1, 3));
+        a.run("select.range", &json!({"anchor": {"block": 2, "off": 5}, "focus": {"block": 2, "off": 5}})).unwrap();
+        a.run("edit.paste", &json!({"text": r["text"], "wordcraft": r["wordcraft"]})).unwrap();
+        assert_eq!(spacing(&a, 2), want);
     }
 }

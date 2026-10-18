@@ -142,7 +142,11 @@ fn paste_special(s: &mut Session, v: &Value) -> CmdResult {
         }
         "formatted" => {
             let text = p::str(v, "text").map(|t| t.replace("\r\n", "\n"));
-            own_fragment(s, v, text.as_deref()).ok_or_else(|| CmdError::Failed("the clipboard is empty".into()))?
+            let (frag, whole) = own_fragment(s, v, text.as_deref()).ok_or_else(|| CmdError::Failed("the clipboard is empty".into()))?;
+            insert_own(s, frag, whole)?;
+            let mut r = sel_result(s)?;
+            r["pastedAs"] = json!(fmt);
+            return Ok(r);
         }
         "html" => adopt(s, import_html(&src)),
         _ => adopt(s, wordcraft_formats::rtf::import(src.as_bytes()).map_err(|e| CmdError::Failed(format!("bad RTF: {e}")))?),
@@ -264,6 +268,9 @@ pub fn rich_fragment(s: &mut Session, v: &Value) -> Option<Fragment> {
 
 /// What a Paste brings in.
 pub enum Pasted {
+    /// WordCraft's own copy, from this window or another: its paragraphs keep their formatting as
+    /// copied (see [`insert_own`]); `true` when it is whole paragraphs.
+    Own(Fragment, bool),
     /// WordCraft's own copy, or another program's HTML or RTF: it keeps the formatting it carries.
     Fragment(Fragment),
     /// The system clipboard's text, lines separated by `\n`.
@@ -274,8 +281,8 @@ pub enum Pasted {
 /// another program's formatted copy (HTML, RTF), else the system clipboard's text.
 pub fn paste_content(s: &mut Session, v: &Value) -> Result<Pasted, CmdError> {
     let text = p::str(v, "text").map(|t| t.replace("\r\n", "\n"));
-    if let Some(f) = own_fragment(s, v, text.as_deref()) {
-        return Ok(Pasted::Fragment(f));
+    if let Some((f, whole)) = own_fragment(s, v, text.as_deref()) {
+        return Ok(Pasted::Own(f, whole));
     }
     if let Some(f) = rich_fragment(s, v) {
         return Ok(Pasted::Fragment(f));
@@ -289,8 +296,9 @@ pub fn paste_content(s: &mut Session, v: &Value) -> Result<Pasted, CmdError> {
 /// WordCraft's own copy, if the clipboard holds one: this window's, while the system clipboard
 /// still holds it (its text, or its WordCraft Fragment); else another WordCraft window's, from its
 /// WordCraft Fragment, keeping the look it had there (see `native_clip`). A fragment whose text
-/// isn't the system clipboard's is stale: another program copied since.
-fn own_fragment(s: &mut Session, v: &Value, text: Option<&str>) -> Option<Fragment> {
+/// isn't the system clipboard's is stale: another program copied since. With it, whether it is
+/// whole paragraphs.
+fn own_fragment(s: &mut Session, v: &Value, text: Option<&str>) -> Option<(Fragment, bool)> {
     let native = p::str(v, "wordcraft").filter(|n| super::native_clip::looks_native(n));
     let ours = native.is_some_and(|n| s.clipboard_native_id != 0 && super::native_clip::id(n) == s.clipboard_native_id);
     if let Some(f) = &s.clipboard
@@ -299,20 +307,20 @@ fn own_fragment(s: &mut Session, v: &Value, text: Option<&str>) -> Option<Fragme
                 && text.is_none_or(|t| f.clipboard_text() == t)
                 && (text.is_some() || (p::str(v, "html").is_none() && p::str(v, "rtf").is_none()))))
     {
-        return Some(f.clone());
+        return Some((f.clone(), s.clipboard_whole));
     }
-    let (copied, doc) = super::native_clip::decode(native?)?;
-    if text.is_some_and(|t| t != copied.replace("\r\n", "\n")) {
+    let copied = super::native_clip::decode(native?)?;
+    if text.is_some_and(|t| t != copied.text.replace("\r\n", "\n")) {
         return None;
     }
-    let frag = super::native_clip::adopt(s, doc);
-    (!frag.blocks.is_empty()).then_some(frag)
+    let frag = super::native_clip::adopt(s, copied.doc);
+    (!frag.blocks.is_empty()).then_some((frag, copied.whole))
 }
 
 /// [`paste_content`] as a fragment. Text becomes paragraphs with no formatting of their own.
 pub fn paste_fragment(s: &mut Session, v: &Value) -> Result<Fragment, CmdError> {
     Ok(match paste_content(s, v)? {
-        Pasted::Fragment(f) => f,
+        Pasted::Own(f, _) | Pasted::Fragment(f) => f,
         Pasted::Text(t) => Fragment::from_text(&t),
     })
 }
@@ -364,7 +372,22 @@ pub fn merge_formatting(s: &Session, frag: &mut Fragment) {
 }
 
 /// Replace the selection with `frag`, marking it as an insertion under Track Changes.
-pub fn insert(s: &mut Session, mut frag: Fragment) -> Result<(), CmdError> {
+pub fn insert(s: &mut Session, frag: Fragment) -> Result<(), CmdError> {
+    insert_with(s, frag, None)
+}
+
+/// [`insert`] for WordCraft's own copy (this window's or another's), keeping its paragraph
+/// formatting as Word's Keep Source Formatting does: a pasted paragraph whose mark came with the
+/// copy is formatted as it was — the first one too, though it joins the paragraph the paste
+/// starts in, which used to keep its own formatting whenever it had any — and so is a whole
+/// paragraph (`whole`: copied from its start to its end; Word's smart paragraph selection takes
+/// its mark) pasted into an empty one. A piece of a paragraph pasted into text takes that
+/// paragraph's, as in Word.
+pub fn insert_own(s: &mut Session, frag: Fragment, whole: bool) -> Result<(), CmdError> {
+    insert_with(s, frag, Some(whole))
+}
+
+fn insert_with(s: &mut Session, mut frag: Fragment, own: Option<bool>) -> Result<(), CmdError> {
     super::controls::prepare_edit(s)?;
     let at = delete_selection(s)?;
     let track = s.doc.settings.track_changes;
@@ -388,7 +411,17 @@ pub fn insert(s: &mut Session, mut frag: Fragment) -> Result<(), CmdError> {
             });
         }
     }
+    let into_empty = s.doc.para_at(&at).is_some_and(|p| p.text.is_empty());
     let end = s.doc.insert_fragment(&at, &frag)?;
+    if let Some(whole) = own
+        && let Some(Block::Para(first)) = frag.blocks.first()
+        && (frag.blocks.len() > 1 || (whole && into_empty))
+        && let Ok(p) = s.doc.para_mut(at.story, &at.path)
+    {
+        p.props = first.props.clone();
+        p.mark = first.mark.clone();
+        p.touch();
+    }
     // The paragraph marks the paste added are inserted too, so rejecting it joins the
     // paragraphs again. The last paragraph ends with the original mark and keeps it.
     if let Some(r) = rid

@@ -175,6 +175,7 @@ fn copy(s: &mut Session, _: &Value) -> CmdResult {
     s.clipboard_text = f.clipboard_text();
     s.clip_history.push(&f, &s.clipboard_text);
     s.clipboard = Some(f);
+    s.clipboard_whole = a.off == 0 && s.doc.para_at(&b).is_some_and(|p| b.off >= p.text.len());
     Ok(copy_result(s))
 }
 
@@ -248,6 +249,7 @@ fn insert_spike(s: &mut Session, _: &Value) -> CmdResult {
 /// as Keep Text Only does.
 fn paste(s: &mut Session, v: &Value) -> CmdResult {
     match super::paste::paste_content(s, v)? {
+        super::paste::Pasted::Own(frag, whole) => super::paste::insert_own(s, frag, whole)?,
         super::paste::Pasted::Fragment(frag) => super::paste::insert(s, frag)?,
         super::paste::Pasted::Text(text) => super::paste::insert_text(s, &text)?,
     }
