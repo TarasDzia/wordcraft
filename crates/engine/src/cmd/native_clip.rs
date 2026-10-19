@@ -502,4 +502,59 @@ mod tests {
         a.run("edit.paste", &json!({"text": r["text"], "wordcraft": r["wordcraft"]})).unwrap();
         assert_eq!(spacing(&a, 2), want);
     }
+
+    /// Paste Special's dialog gets the WordCraft Fragment with the formats it lists, so its
+    /// Formatted Text pastes another window's copy.
+    #[test]
+    fn the_paste_special_dialog_keeps_the_fragment() {
+        let mut a = source();
+        let r = select_all_and_copy(&mut a);
+        let mut b = Session::new(Document::new());
+        b.run("edit.pasteSpecial", &json!({"text": r["text"], "html": r["html"], "wordcraft": r["wordcraft"]})).unwrap();
+        let req = b.ui_requests.last().cloned().unwrap();
+        assert_eq!(req["open"], "pasteSpecial");
+        assert_eq!(req["formats"].get(0).and_then(Value::as_str), Some("formatted"));
+        // OK in the dialog sends the request's clipboard back with the chosen format.
+        let mut params = json!({"as": "formatted"});
+        for k in ["text", "html", "rtf", "picture", "wordcraft"] {
+            if let Some(v) = req.get(k) {
+                params[k] = v.clone();
+            }
+        }
+        assert!(params["wordcraft"].as_str().is_some_and(looks_native));
+        let out = b.run("edit.pasteSpecial", &params).unwrap();
+        assert_eq!(out["pastedAs"], "formatted");
+        assert_eq!(body_para(&b, 0).props.style.as_deref(), Some("Heading1"));
+    }
+
+    /// The Clipboard pane pastes an item as a piece of a paragraph would go in, whatever the last
+    /// copy was: whether an item is whole paragraphs isn't kept.
+    #[test]
+    fn a_clipboard_pane_item_doesnt_take_the_last_copy_s_wholeness() {
+        let mut doc = Document::from_text("Three\n");
+        if let Some(Block::Para(p)) = doc.body.get_mut(0).map(Arc::make_mut) {
+            p.props.space_before = Some(18.0);
+            p.props.space_after = Some(30.0);
+        }
+        if let Some(Block::Para(p)) = doc.body.get_mut(1).map(Arc::make_mut) {
+            p.props.space_before = Some(0.0);
+            p.props.space_after = Some(0.0);
+        }
+        let mut a = Session::new(doc);
+        let range = |a: &mut Session, from: usize, to: usize| {
+            a.run("select.range", &json!({"anchor": {"block": 0, "off": from}, "focus": {"block": 0, "off": to}})).unwrap();
+        };
+        // A piece, then the whole paragraph: the piece is item 1.
+        range(&mut a, 1, 4);
+        a.run("edit.copy", &json!({})).unwrap();
+        range(&mut a, 0, 5);
+        a.run("edit.copy", &json!({})).unwrap();
+        assert!(a.clipboard_whole);
+        a.run("select.range", &json!({"anchor": {"block": 1, "off": 0}, "focus": {"block": 1, "off": 0}})).unwrap();
+        a.run("edit.pasteClipboardItem", &json!({"index": 1})).unwrap();
+        let p = body_para(&a, 1);
+        assert_eq!(p.text, "hre");
+        assert_eq!((p.props.space_before, p.props.space_after), (Some(0.0), Some(0.0)), "the line keeps its own");
+        assert!(a.clipboard_whole, "the clipboard's own copy is still whole paragraphs");
+    }
 }

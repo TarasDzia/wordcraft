@@ -105,7 +105,7 @@ fn paste_special(s: &mut Session, v: &Value) -> CmdResult {
     let Some(fmt) = p::str(v, "as") else {
         // No format chosen: list them and ask a front end (if any) to show the dialog.
         let mut req = json!({"open": "pasteSpecial", "formats": ids});
-        for k in ["text", "html", "rtf", "picture"] {
+        for k in ["text", "html", "rtf", "picture", "wordcraft"] {
             if let Some(t) = p::str(v, k) {
                 req[k] = json!(t);
             }

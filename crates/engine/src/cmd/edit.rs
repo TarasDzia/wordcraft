@@ -78,7 +78,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(r#"{"text"?: string}"#)
             .key("Mod+Shift+Alt+V"),
         CommandSpec::new("edit.pasteMerge", "Paste: Merge Formatting", "Home › Clipboard › Paste", paste_merge)
-            .params(r#"{"text"?: string, "html"?: string, "rtf"?: string}"#),
+            .params(r#"{"text"?: string, "html"?: string, "rtf"?: string, "wordcraft"?: string (WordCraft Fragment)}"#),
         CommandSpec::new("edit.clipboardPane", "Clipboard Pane", "Home › Clipboard", |s, v| {
             let on = p::bool(v, "value").unwrap_or(!s.view.clipboard_pane);
             s.view.clipboard_pane = on;
@@ -375,10 +375,13 @@ fn clip_index(s: &Session, v: &Value) -> Result<usize, CmdError> {
 }
 
 /// Paste a collected item through the normal paste path. The clipboard itself stays as it was.
+/// Whether the item is whole paragraphs isn't kept, so it pastes as a piece of one would.
 fn paste_clip(s: &mut Session, f: Fragment) -> CmdResult {
     let saved = s.clipboard.replace(f);
+    let whole = std::mem::replace(&mut s.clipboard_whole, false);
     let r = paste(s, &json!({}));
     s.clipboard = saved;
+    s.clipboard_whole = whole;
     r
 }
 

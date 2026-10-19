@@ -337,5 +337,13 @@ mod tests {
         let r = b.run("edit.pasteSpecial", json!({})).unwrap();
         let ids: Vec<&str> = r["formats"].as_array().unwrap().iter().filter_map(|f| f["id"].as_str()).collect();
         assert_eq!(ids.first(), Some(&"formatted"), "{ids:?}");
+        // The dialog keeps the fragment, so its OK pastes it as Formatted Text.
+        match &b.dialog {
+            Some(crate::dialogs::Dialog::PasteSpecial { formats, payload, .. }) => {
+                assert_eq!(formats.first().map(String::as_str), Some("formatted"));
+                assert!(payload.get("wordcraft").and_then(Value::as_str).is_some_and(|n| n.starts_with("{\"format\"")), "{payload}");
+            }
+            _ => panic!("Paste Special's dialog isn't open"),
+        }
     }
 }
