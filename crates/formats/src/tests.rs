@@ -900,6 +900,9 @@ fn html_and_rtf_carry_paragraph_spacing() {
         assert!(html.contains(css), "{css} in {html}");
     }
     assert!(html.contains("line-height:14pt;mso-line-height-rule:exactly"), "{html}");
+    // A page saved as HTML keeps its paragraphs plain under its own style sheet.
+    let page = crate::html::export(&d);
+    assert!(!page.contains("margin-top:18pt") && !page.contains("line-height:2"), "{page}");
     let rtf = crate::rtf::export(&d);
     for word in ["\\sb360", "\\sa600", "\\sl480\\slmult1", "\\li720", "\\fi-360", "\\sl-280\\slmult0"] {
         assert!(rtf.contains(word), "{word} in {rtf}");

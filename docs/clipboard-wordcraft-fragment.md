@@ -66,12 +66,14 @@ Merge Formatting and Keep Text Only work on it as on any other paste.
 ## Other programs
 
 Copy's HTML is now exported with the source document's styles, lists and pictures, so Word,
-LibreOffice and browsers see a copy's Normal font and style sizes as they are in WordCraft. HTML and
-RTF exports (the clipboard's HTML, Save as HTML or RTF) also carry each paragraph's spacing before
+LibreOffice and browsers see a copy's Normal font and style sizes as they are in WordCraft. The
+clipboard's HTML and RTF (and a document saved as RTF) also carry each paragraph's spacing before
 and after, line spacing and indents as they resolve in its document: HTML `margin-top`/`-bottom`,
-`line-height` (with `mso-line-height-rule` for exact and at-least spacing), `margin-left`/`-right`
-and `text-indent`; RTF `\sb \sa \sl\slmult \li \ri \fi`. They used to be left out (RTF wrote fixed
-values per kind of paragraph).
+a unitless `line-height` for multiple spacing (spans inherit the factor), `line-height` in points
+with `mso-line-height-rule` for exact and at-least spacing, `margin-left`/`-right` and
+`text-indent`; RTF `\sb \sa \sl\slmult \li \ri \fi`. They used to be left out (RTF wrote fixed
+values per kind of paragraph). A page saved as HTML keeps its paragraphs plain under its own style
+sheet.
 
 Tests: `crates/engine/src/cmd/native_clip.rs` (round trip, keep source look, own copy, stale and
 hostile payloads, pictures) and `crates/ui-egui/src/system_clipboard.rs`

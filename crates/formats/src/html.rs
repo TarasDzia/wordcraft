@@ -1955,7 +1955,8 @@ pub fn export(doc: &Document) -> String {
 }
 
 /// `doc`'s content as an HTML fragment (no head or style sheet): what a copy puts on the system
-/// clipboard beside its text, equations as MathML (#816).
+/// clipboard beside its text, equations as MathML (#816). Its paragraphs carry their spacing, line
+/// spacing and indents, since the program it is pasted into has none of our styles.
 pub fn export_fragment(doc: &Document) -> String {
     let flow = model::from_doc(doc);
     let mut out = String::from("<meta charset=\"utf-8\">");
@@ -1980,9 +1981,30 @@ pub fn export_flow(flow: &Flow, lang: &str) -> String {
          table{border-collapse:collapse;margin:0.5em 0}\nblockquote{margin:0.5em 2em;font-style:italic;color:#404040}\n\
          pre{background:#f5f5f5;padding:0.5em;font-family:'Courier New',monospace;font-size:10pt}\n</style>\n</head>\n<body>\n",
     );
-    blocks_html(&flow.blocks, &mut out, 0);
+    // A saved page keeps its paragraphs plain under its own style sheet: per-paragraph spacing is
+    // for the clipboard's fragment ([`export_fragment`]).
+    blocks_html(&without_spacing(&flow.blocks), &mut out, 0);
     out.push_str("</body>\n</html>\n");
     out
+}
+
+/// `blocks` with no paragraph spacing, line spacing or indents of their own (tables included).
+fn without_spacing(blocks: &[FBlock]) -> Vec<FBlock> {
+    blocks
+        .iter()
+        .map(|b| match b {
+            FBlock::Para(p) => FBlock::Para(Para { spacing: model::Spacing::default(), ..p.clone() }),
+            FBlock::Table(t) => {
+                let mut t = t.clone();
+                for row in &mut t.rows {
+                    for c in row {
+                        c.blocks = without_spacing(&c.blocks);
+                    }
+                }
+                FBlock::Table(t)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
