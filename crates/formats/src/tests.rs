@@ -894,7 +894,9 @@ fn html_and_rtf_carry_paragraph_spacing() {
         p.props.line_spacing = Some(LineSpacing::Exactly(14.0));
     }
     let html = crate::html::export_fragment(&d);
-    for css in ["margin-top:18pt", "margin-bottom:30pt", "line-height:200%", "margin-left:36pt", "text-indent:-18pt"] {
+    // Multiple spacing is unitless, so a span with a larger font inherits the factor.
+    assert!(!html.contains("line-height:200%"), "{html}");
+    for css in ["margin-top:18pt", "margin-bottom:30pt", "line-height:2", "margin-left:36pt", "text-indent:-18pt"] {
         assert!(html.contains(css), "{css} in {html}");
     }
     assert!(html.contains("line-height:14pt;mso-line-height-rule:exactly"), "{html}");

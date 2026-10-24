@@ -85,13 +85,28 @@ pub fn copy_document(s: &Session) -> Option<Document> {
 }
 
 /// The pictures of `media` that the fragment refers to (by key, anywhere in its blocks or text
-/// box stories).
+/// box stories): one walk over the fragment's strings, whatever the number of pictures.
 fn used_media(f: &Fragment, media: &BTreeMap<String, Arc<Vec<u8>>>) -> BTreeMap<String, Arc<Vec<u8>>> {
     if media.is_empty() {
         return BTreeMap::new();
     }
-    let Ok(json) = serde_json::to_string(f) else { return BTreeMap::new() };
-    media.iter().filter(|(k, _)| serde_json::to_string(k).is_ok_and(|quoted| json.contains(&quoted))).map(|(k, v)| (k.clone(), v.clone())).collect()
+    let Ok(value) = serde_json::to_value(f) else { return BTreeMap::new() };
+    let mut used = BTreeMap::new();
+    // Iterative, so a deeply nested fragment can't exhaust the stack.
+    let mut stack = vec![&value];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) => {
+                if let Some((k, data)) = media.get_key_value(s.as_str()) {
+                    used.insert(k.clone(), data.clone());
+                }
+            }
+            Value::Array(items) => stack.extend(items),
+            Value::Object(fields) => stack.extend(fields.values()),
+            _ => {}
+        }
+    }
+    used
 }
 
 /// The session's copy as a WordCraft Fragment payload; `None` when nothing was copied or it is
@@ -128,7 +143,11 @@ pub fn decode(json: &str) -> Option<Decoded> {
     Some(Decoded { text: p.text, doc, whole: p.whole })
 }
 
-/// A short id of a payload, to tell the window's own copy from another window's.
+/// A short id of a payload, to tell the window's own copy from another window's. It is only a
+/// fast path, compared with the id Copy kept in this window's session: `DefaultHasher` isn't stable
+/// across Rust versions, so the id must not be persisted or trusted between builds. Two windows of
+/// different builds hashing alike or not only decides whether the copy is pasted as this window's
+/// own or adopted as another's, and both give the same document.
 pub fn id(json: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     json.hash(&mut h);
@@ -556,5 +575,20 @@ mod tests {
         assert_eq!(p.text, "hre");
         assert_eq!((p.props.space_before, p.props.space_after), (Some(0.0), Some(0.0)), "the line keeps its own");
         assert!(a.clipboard_whole, "the clipboard's own copy is still whole paragraphs");
+    }
+
+    /// Only the pictures the copy shows travel with it, not every picture of its document.
+    #[test]
+    fn only_the_copy_s_pictures_travel() {
+        let png = |v: u8| wordcraft_render::Rendered { width: 2, height: 2, pixels: vec![v; 16] }.to_png();
+        let mut a = Session::new(Document::new());
+        a.run("insert.picture", &json!({"data": base64_encode(&png(10))})).unwrap();
+        // A picture the document holds but the copy doesn't show.
+        a.doc.add_media(png(200), "png");
+        assert_eq!(a.doc.media.len(), 2);
+        let r = select_all_and_copy(&mut a);
+        let Decoded { doc, .. } = decode(r["wordcraft"].as_str().unwrap()).unwrap();
+        assert_eq!(doc.media.len(), 1);
+        assert!(doc.media.values().any(|d| **d == png(10)));
     }
 }

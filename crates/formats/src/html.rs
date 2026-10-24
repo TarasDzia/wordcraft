@@ -1766,7 +1766,9 @@ fn para_attrs(p: &Para) -> String {
 }
 
 /// A paragraph's spacing, line spacing and indents as CSS, in points; Word reads its
-/// `mso-line-height-rule` for exact and at-least line spacing.
+/// `mso-line-height-rule` for exact and at-least line spacing. Multiple spacing is a unitless
+/// `line-height`, which spans inherit as a factor: a percentage would be computed once from the
+/// paragraph's font size and leave a larger font in a span too little room.
 fn spacing_css(sp: &model::Spacing) -> Vec<String> {
     use wordcraft_doc::props::LineSpacing;
     let n = |v: f32| {
@@ -1782,7 +1784,7 @@ fn spacing_css(sp: &model::Spacing) -> Vec<String> {
         }
     }
     match sp.line {
-        Some(LineSpacing::Multiple(m)) if m.is_finite() && m > 0.0 => css.push(format!("line-height:{}%", n(m * 100.0))),
+        Some(LineSpacing::Multiple(m)) if m.is_finite() && m > 0.0 => css.push(format!("line-height:{}", n(m))),
         Some(LineSpacing::Exactly(v)) if v.is_finite() && v > 0.0 => css.push(format!("line-height:{}pt;mso-line-height-rule:exactly", n(v))),
         Some(LineSpacing::AtLeast(v)) if v.is_finite() && v > 0.0 => css.push(format!("line-height:{}pt;mso-line-height-rule:at-least", n(v))),
         _ => {}

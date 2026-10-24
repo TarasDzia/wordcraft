@@ -17,7 +17,8 @@ WordCraft window pastes it as it was:
 | Wayland | not yet: arboard's offer can't take another type (a data-control offer of our own can, see the RTF work) | `application/x-wordcraft-fragment` |
 | X11, macOS | not yet | — |
 
-Without it another window pastes the HTML as before.
+Without it another window pastes the HTML as before: on macOS and X11 a copy reaches another
+WordCraft window only as HTML, RTF or text, with what those formats can carry.
 
 ## Payload
 
@@ -29,8 +30,14 @@ JSON, at most 64 MB (`native_clip::MAX_NATIVE_BYTES`):
 
 `doc` is a `wordcraft_doc::Document` whose body is the copied blocks and whose parts are the text box
 stories they show, with the source document's styles, numbering and revisions. `media` holds only
-the pictures the copy refers to. Reading it is lenient and bounded like opening a `.json` document:
-size-capped, unknown fields ignored, runs repaired (`Document::normalize_runs`).
+the pictures the copy refers to (found in one pass over the copy's strings). Reading it is lenient
+and bounded like opening a `.json` document: size-capped, unknown fields ignored, runs repaired
+(`Document::normalize_runs`).
+
+Memory: the cap is on the JSON. A paste holds the JSON, the parsed `Document` and the decoded
+pictures (about three quarters of their base64) at once, so a copy at the cap can briefly take a
+few times 64 MB. That is the price of pasting the pictures themselves; a copy too large for the cap
+isn't written at all, and the other window pastes the HTML.
 
 ## Paste
 
